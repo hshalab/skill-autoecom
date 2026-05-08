@@ -51,9 +51,59 @@ If a required key is missing, ask the user for it before continuing.
 
 ## Orchestration model
 
-This skill is invoked daily by the **openclaw** harness, which also handles the messaging bridge (Telegram, WhatsApp, or whatever channel openclaw is configured with). The skill itself does NOT talk to Telegram or any messenger directly — it just runs the pipeline and presents the carousel as text + absolute file paths. openclaw forwards the slides to the user's phone, captures the user's reply, and feeds it back into the conversation.
+This skill is invoked **daily** by an agent harness (Hermes / openclaw / Claude Code), which also handles the messaging bridge (Telegram, WhatsApp, or whatever channel the user has configured). The skill itself does NOT talk to Telegram or any messenger directly — it just runs the pipeline and presents the carousel as text + absolute file paths. The harness forwards the slides to the user's phone, captures the user's reply, and feeds it back into the conversation.
 
-If the skill is invoked outside openclaw (e.g., user runs `/autoecom` directly in Claude Code), the same prompts work — they just appear in the terminal instead of on the phone.
+If the skill is invoked outside a harness (e.g., user runs `/autoecom` directly in Claude Code), the same prompts work — they just appear in the terminal instead of on the phone.
+
+### Two scheduled routines (REQUIRED — install on first run)
+
+This skill is **not designed to be run on demand**. It only works as expected when the harness has two cron-style routines installed. **On the very first invocation, BEFORE running Step 0, the agent MUST verify both routines exist and offer to create whichever is missing.** Without these, the round-robin cycle stalls and the learning loop never fires.
+
+| Routine | Cadence | Cron expression | What it does |
+|---|---|---|---|
+| **`/autoecom` daily** | every day, 09:00 local time | `0 9 * * *` | Runs Steps 0–9: pick next product → plan → generate → compose → present carousel **via the configured messenger** for approval → publish → mark-processed. |
+| **`/autoecom-learn` weekly** | Mondays 09:00 local time | `0 9 * * 1` | Runs `python autoecom.py learn`, then **posts a summary in the same messenger channel** with the patterns Gemini extracted + sample sizes + a link to the audit file. |
+
+**How to install** (pick the path that matches the harness):
+
+- **Hermes**: ask Hermes to schedule a recurring routine — *"schedule `/autoecom` every day at 09:00, and `/autoecom-learn` every Monday at 09:00, both reporting to my Telegram"* (or WhatsApp / whatever channel is configured). Hermes will write the routine itself.
+- **openclaw**: same pattern — openclaw has a built-in scheduler. Use its `schedule` / `routine` mechanism.
+- **Claude Code (local-only)**: install via system crontab. Example:
+  ```
+  0 9 * * *  cd ~/Documents/skill-autoecom && ./venv/bin/python -c "import os; os.system('claude /autoecom')"
+  0 9 * * 1  cd ~/Documents/skill-autoecom && ./venv/bin/python autoecom.py learn
+  ```
+  (For Claude Code without a messenger bridge, the daily run will surface the carousel in the terminal — which means the user has to be at their machine. Recommend Hermes / openclaw for hands-off operation.)
+
+**On first invocation, do this BEFORE Step 0:**
+
+1. Detect the harness (Hermes vs openclaw vs Claude Code) by looking at environment / available tools.
+2. Ask the user once: *"¿Quieres que programe las dos rutinas (carrusel diario 09:00 + aprendizaje semanal lunes 09:00) en \<harness\>, enviando los carruseles a tu \<canal: Telegram/WhatsApp/etc.\>? Necesitarás dar el ok cada día desde tu móvil."*
+3. If yes → install both routines and confirm. If no → continue but **warn explicitly**: *"OK, sin rutinas el ciclo round-robin no avanza si te olvidas de invocarme manualmente, y el `learn` semanal no se dispara — los priors quedarán congelados."*
+4. If the user says they already have routines → trust them but show what you found (whatever the harness reports) so they can verify.
+
+### Learn-day reporting (the agent MUST do this on every weekly learn run)
+
+After `python autoecom.py learn` finishes, the agent reads `learnings/runs/learn-YYYY-MM-DD.md` and **sends a digest to the configured messenger** so the user understands what changed without opening files. Format:
+
+> 📊 **Aprendizaje semanal — \<date\>**
+>
+> Cohorte: N carruseles con métricas (ventana \<soak\>–\<max-age\> días).
+>
+> **Top hooks** (de `HOT_HOOKS.md`):
+> - bullet 1 — *evidencia: 4/5 winners, 0/5 losers*
+> - bullet 2 — *…*
+>
+> **Top imagery** (de `HOT_IMAGERY.md`):
+> - bullet 1 — *…*
+> - bullet 2 — *…*
+>
+> Cambios respecto a la semana pasada: \<resumen breve de qué se añadió/quitó\>.
+> Auditoría completa: `learnings/runs/learn-YYYY-MM-DD.md`.
+
+If `learn` returned "not enough data" (<5 winners + 5 losers), say so honestly: *"Esta semana no hay suficientes datos para refrescar los priors (cohorte de N carruseles). Se necesitan al menos 10 con métricas maduras. Volveré a intentarlo el próximo lunes."*
+
+This message is the user's only window into the learning loop — without it, the priors evolve invisibly and trust erodes. **Always send it.**
 
 ## Daily workflow
 

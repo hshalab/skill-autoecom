@@ -39,10 +39,17 @@ The **agent** does the creative + visual work (identifying the logo, choosing co
 Open Claude Code, Codex, Hermes, OpenClaw, or any agent with shell access and paste:
 
 ```
-Set up https://github.com/mutonby/skill-autoecom for me. Read README.md and SKILL.md, clone the repo into ~/Documents/skill-autoecom, create the venv, install requirements.txt, copy .env.example to .env, and ask me for the values of STORE_URL, GEMINI_API_KEY, UPLOAD_POST_API_KEY, and UPLOAD_POST_PROFILE one by one. After .env is filled, run a health check against the Upload-Post API and tell me whether Instagram and TikTok are connected. Do not echo any API key back to me after I paste it.
+Set up https://github.com/mutonby/skill-autoecom for me. Read README.md and SKILL.md, clone the repo into ~/Documents/skill-autoecom, create the venv, install requirements.txt, copy .env.example to .env, and ask me for the values of STORE_URL, GEMINI_API_KEY, UPLOAD_POST_API_KEY, and UPLOAD_POST_PROFILE one by one. After .env is filled, run a health check against the Upload-Post API and tell me whether Instagram and TikTok are connected. Then PROGRAM TWO RECURRING ROUTINES IN MY AGENT HARNESS: (1) `/autoecom` daily at 09:00 local time — generate the carousel and send it to my configured messenger (Telegram / WhatsApp / whatever) for approval; (2) `/autoecom-learn` weekly on Monday at 09:00 — run `python autoecom.py learn` and post a digest of what was learned to the same messenger. Ask me which messenger I want before scheduling. Do not echo any API key back to me after I paste it.
 ```
 
-The agent will handle the entire bootstrap. Total time: ~2 minutes + however long it takes you to paste 4 keys.
+The agent will handle the entire bootstrap **including the two cron jobs**. Without those routines, the daily round-robin stalls and the priors never refresh — see [How it learns](#-how-it-learns). Total time: ~2 minutes + however long it takes you to paste 4 keys.
+
+> [!IMPORTANT]
+> **This skill is designed to run on a schedule, not on demand.** Two routines are mandatory:
+> - **Daily 09:00** — generate today's carousel and ask for approval via your messenger.
+> - **Weekly Monday 09:00** — refresh `HOT_HOOKS.md` + `HOT_IMAGERY.md` from real engagement data, and post a chat summary of what changed.
+>
+> Hermes and openclaw handle this natively (they have built-in schedulers + messenger bridges). For plain Claude Code, fall back to system `crontab`. The agent will offer to set both up on first invocation.
 
 ---
 
@@ -151,7 +158,7 @@ The skill **gets smarter every week**. Two evidence-backed priors are maintained
 |---|---|---|
 | `log-candidate <plan.json>` | once per planning session | Records the agent's INITIAL proposal to `learnings/candidate-history.jsonl`. |
 | `publish` (auto) | every approved carousel | Appends the FINAL plan + `request_id` to `learnings/post-history.jsonl`. |
-| `learn` | weekly | Pulls Upload-Post metrics, finds winners/losers (z-score on views + engagement), asks Gemini to refresh BOTH `HOT_HOOKS.md` AND `HOT_IMAGERY.md`. |
+| `learn` | weekly (Monday 09:00 cron) | Pulls Upload-Post metrics, finds winners/losers (z-score on views + engagement), asks Gemini to refresh BOTH `HOT_HOOKS.md` AND `HOT_IMAGERY.md`. **Agent posts a digest of what changed to your messenger** (Telegram / WhatsApp / whatever the harness is bridging) so you don't have to read audit files. |
 | `reflect` | on demand | Compares candidates vs published in a window. Emits qualitative observations on hooks AND imagery. NOT auto-promoted. |
 
 ### What's better than a single-prior system
