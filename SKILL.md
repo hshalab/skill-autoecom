@@ -125,6 +125,7 @@ Goal: identify the next product URL to feature, in round-robin order over the to
 
 Goal: write `output/YYYY-MM-DD/<slug>/plan.json` with the full carousel plan.
 
+0. **Pull the priors.** `python autoecom.py priors` returns `{"hooks": "...", "imagery": "..."}`. These are auto-managed `HOT_HOOKS.md` and `HOT_IMAGERY.md` files refreshed weekly by `learn` based on real engagement. **`hooks` is YOUR creative input** — read it before writing slide-1 `text_overlay` and treat its bullets as evidence-backed priors (e.g. "hooks <8 words convert 3x"). **`imagery` is auto-prepended by the script** to every nano-banana call inside `generate`, so you don't have to inject it manually — just be aware it's there. If both fields are empty (cold start), proceed without priors.
 1. **Get the product data.** `python autoecom.py product <PRODUCT_URL>` returns the JSON-LD parsed dict (name, description, price, currency, images, rating, brand, sku). If it returns very thin data (no images, no description), `WebFetch <PRODUCT_URL>` and write the dict yourself.
 2. **Decide the carousel structure.** 3–8 slides depending on substance. Slide 1 is always a **hook** that stops the scroll. Last slide is a **soft CTA**. Middle slides cover: feature/benefit, lifestyle/use-case, social proof (only if rating exists with reviews), spec/quality detail, "vs alternative" comparison if it makes sense.
 3. **Write the on-image text** (`text_overlay`) for each slide. Hard rules:
@@ -167,6 +168,14 @@ Goal: write `output/YYYY-MM-DD/<slug>/plan.json` with the full carousel plan.
 ```
 
 The `brand` block in `plan.json` is only the subset the composer needs (primary, accent, logo path). The rest of the brand kit (voice, font) was already used as input when YOU wrote the slide text — it doesn't need to be passed to the composer.
+
+### Step 3.5 — Log the candidate (before user editing)
+
+```bash
+python autoecom.py log-candidate "output/YYYY-MM-DD/<slug>/plan.json"
+```
+
+This appends the INITIAL plan to `learnings/candidate-history.jsonl` so `reflect` can later compare what you proposed against what actually shipped (after any user edits in Step 6). **Run this exactly once, right after writing `plan.json` for the first time.** Do NOT re-run it after the user requests regenerations — that would muddy the learning signal. The script computes a `candidate_id` (sha1 of the plan); if the user publishes the carousel unchanged, the same id will appear in `post-history.jsonl` and `reflect` will count it as approved-unchanged. If they edit, the ids diverge and reflect counts the original as edited/rejected.
 
 ### Step 4 — Generate slide images with nano-banana
 
@@ -260,6 +269,57 @@ Updates `state/processed.json` so tomorrow's `pick` skips this product. **Run th
 
 Print one line: product name, number of slides published, platforms, and the carousel folder path.
 
+## Learning loop (`learn` weekly, `reflect` on demand)
+
+This skill **gets smarter over time**. Two priors are maintained automatically and refreshed from real engagement data:
+
+- **`learnings/HOT_HOOKS.md`** — patterns of slide-1 hook copy that converted. You read this in **Step 3.0** when writing `text_overlay` for the hook slide.
+- **`learnings/HOT_IMAGERY.md`** — image-prompt patterns (lighting, composition, framing) that performed well. **Auto-prepended by `generate` to every nano-banana call** — no agent action needed.
+
+Two priors instead of one (vs. autoshorts) so the engine can isolate what's working visually from what's working textually.
+
+### `learn` — weekly, metrics-driven
+
+```bash
+python autoecom.py learn
+# optional flags: --soak-days 7 --max-age-days 90 --top-pct 0.20 --bottom-pct 0.20
+```
+
+Pulls Upload-Post analytics for every carousel in `post-history.jsonl` whose age is in `[soak-days, max-age-days]`. Computes a composite z-score per carousel (`0.6·z(views) + 0.4·z(engagement_rate)`), takes the top 20% as winners and bottom 20% as losers, then makes **two separate Gemini calls** — one per prior:
+
+1. Refresh `HOT_HOOKS.md` from winners' vs losers' `hook_text`.
+2. Refresh `HOT_IMAGERY.md` from winners' vs losers' `image_prompts`.
+
+Old priors are backed up as `HOT_HOOKS.YYYYMMDD-HHMMSS.md.bak` and `HOT_IMAGERY.YYYYMMDD-HHMMSS.md.bak`. A full audit lands in `learnings/runs/learn-YYYY-MM-DD.md`.
+
+**When to run**:
+- Manually, on demand: `python autoecom.py learn`.
+- Scheduled, weekly via cron / openclaw / Hermes: `0 9 * * 1 cd ~/Documents/skill-autoecom && ./venv/bin/python autoecom.py learn`.
+- Skip if `post-history.jsonl` has fewer than ~10 entries — `learn` will short-circuit and write a "not enough data" note.
+
+### `reflect` — on demand, qualitative
+
+```bash
+python autoecom.py reflect --window-days 30
+```
+
+Compares `candidate-history.jsonl` (initial agent proposals, logged in Step 3.5) against `post-history.jsonl` (final carousels that shipped) within the window. A candidate is "approved-unchanged" if its `candidate_id` appears in posts; otherwise it's "edited or rejected". Sends both buckets to Gemini and asks for **two sets of observations** — hook patterns + imagery patterns — that explain the user's filter.
+
+Output goes to `learnings/runs/reflect-YYYY-MM-DD-HHMM.md` and is **NOT auto-promoted** to `HOT_HOOKS.md` or `HOT_IMAGERY.md`. Reflect can lock in your past biases ("I always reject question hooks") rather than what actually performs, so it stays observational. Read it, copy whatever's useful into `learnings/insights/` (manual notes), and let `learn` keep refreshing the actual priors based on engagement.
+
+### Why this is better than autoshorts' learning loop
+
+- **Two priors, not one**: hook and imagery are independent variables; mixing them masks signal.
+- **Auto-prepended imagery prior**: the agent doesn't have to remember to inject it — `generate` does it silently.
+- **Edit-as-rejection signal**: `reflect` uses `candidate_id` collision to detect whether the user shipped your plan unchanged or revised it. That's a stronger signal than the binary approve/reject autoshorts uses.
+
+### Don'ts
+
+- Do not edit `HOT_HOOKS.md` or `HOT_IMAGERY.md` by hand AND keep running `learn` — `learn` will overwrite. Manual rules go in `learnings/insights/`.
+- Do not delete `post-history.jsonl`, `candidate-history.jsonl`, or `metrics.jsonl` — they're append-only memory.
+- Do not run `learn` more than once a week — Gemini will just churn the same patterns.
+- Do not call `log-candidate` more than once per planning session — only the FIRST plan, before any user editing.
+
 ## Carousel format constraints
 
 - **Aspect ratio**: 1080×1350 (4:5). IG carousel native. TikTok photo posts accept 4:5 fine.
@@ -286,8 +346,18 @@ skill-autoecom/
 │           │   └── slide_NN.png  # raw nano-banana output
 │           ├── slide_NN.png      # final composed slide
 │           └── publish.json
-└── state/
-    ├── brand_kit.json
-    ├── logo.png
-    └── processed.json
+├── state/
+│   ├── brand_kit.json
+│   ├── logo.png
+│   └── processed.json
+└── learnings/
+    ├── HOT_HOOKS.md             # auto-managed by `learn`, read by agent in Step 3.0
+    ├── HOT_IMAGERY.md           # auto-managed by `learn`, auto-prepended in `generate`
+    ├── candidate-history.jsonl  # every initial plan proposal (Step 3.5)
+    ├── post-history.jsonl       # every carousel that shipped (written by `publish`)
+    ├── metrics.jsonl            # snapshots from Upload-Post post-analytics
+    ├── runs/
+    │   ├── learn-YYYY-MM-DD.md
+    │   └── reflect-YYYY-MM-DD-HHMM.md
+    └── insights/                # MANUAL notes (not used by the pipeline)
 ```

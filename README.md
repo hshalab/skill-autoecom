@@ -11,7 +11,7 @@
 [![Gemini 2.5 Flash Image](https://img.shields.io/badge/model-nano--banana-orange.svg)](https://ai.google.dev/)
 [![Upload-Post](https://img.shields.io/badge/publishing-Upload--Post-purple.svg)](https://upload-post.com/)
 
-[Quick install](#-one-shot-install-paste-into-any-agent) · [How it works](#-how-it-works) · [Manual setup](#-manual-setup) · [Compatibility](#-compatibility)
+[Quick install](#-one-shot-install-paste-into-any-agent) · [How it works](#-how-it-works) · [How it learns](#-how-it-learns) · [Manual setup](#-manual-setup) · [Compatibility](#-compatibility)
 
 </div>
 
@@ -106,6 +106,98 @@ The agent will handle the entire bootstrap. Total time: ~2 minutes + however lon
 
 ---
 
+## 🧠 How it learns
+
+The skill **gets smarter every week**. Two evidence-backed priors are maintained from real engagement and re-injected into future runs:
+
+```
+                 ┌───────────────────────────────────────────┐
+                 │           DAILY PIPELINE                  │
+                 │                                           │
+                 │   plan.json ──► log-candidate ──► raw     │
+                 │       │                                   │
+                 │       │ (agent reads HOT_HOOKS.md         │
+                 │       │  for slide-1 copy)                │
+                 │       ▼                                   │
+                 │   generate ──► nano-banana                │
+                 │       ▲                                   │
+                 │       │ (script auto-prepends             │
+                 │       │  HOT_IMAGERY.md)                  │
+                 │                                           │
+                 │   publish ──► post-history.jsonl ◄──┐     │
+                 └─────────────────────────────────────┼─────┘
+                                                       │
+                              ┌────────────────────────┘
+                              │
+                              ▼
+                      ┌───────────────┐         Upload-Post
+                      │  learn (weekly)│ ◄──── post-analytics
+                      └───────┬───────┘
+                              │ z-score winners vs losers
+                              ▼
+                      ┌───────────────┐    ┌───────────────┐
+                      │ HOT_HOOKS.md  │    │HOT_IMAGERY.md │
+                      │ (slide-1 copy)│    │(image prompts)│
+                      └───────────────┘    └───────────────┘
+                              ▲                    ▲
+                              │                    │
+                              └────────┬───────────┘
+                                       │
+                              tomorrow's carousel
+                              reflects what worked
+```
+
+| Subcommand | Cadence | What it does |
+|---|---|---|
+| `log-candidate <plan.json>` | once per planning session | Records the agent's INITIAL proposal to `learnings/candidate-history.jsonl`. |
+| `publish` (auto) | every approved carousel | Appends the FINAL plan + `request_id` to `learnings/post-history.jsonl`. |
+| `learn` | weekly | Pulls Upload-Post metrics, finds winners/losers (z-score on views + engagement), asks Gemini to refresh BOTH `HOT_HOOKS.md` AND `HOT_IMAGERY.md`. |
+| `reflect` | on demand | Compares candidates vs published in a window. Emits qualitative observations on hooks AND imagery. NOT auto-promoted. |
+
+### What's better than a single-prior system
+
+Most "learning loops" mix copy and visual signals into one prior. Bad idea — they're independent variables, and a winner's hook could be carrying its mediocre imagery (or vice versa). This skill keeps them separate:
+
+- **`HOT_HOOKS.md`** is creative input — the **agent reads it** before writing slide-1 `text_overlay`. Bullets like *"hooks <8 words convert 3× better, seen in 4/5 winners, 0/5 losers"* directly inform the planner.
+- **`HOT_IMAGERY.md`** is mechanical injection — the **script auto-prepends it** as a prefix to every nano-banana prompt during `generate`. The agent doesn't have to remember; it just happens.
+
+### Composite scoring
+
+`learn` ranks carousels by:
+
+```
+composite = 0.6 · z(total_views) + 0.4 · z(engagement_rate)
+```
+
+Top 20% = winners, bottom 20% = losers. Defaults tunable via `--top-pct`, `--bottom-pct`, `--weight-views`, `--weight-engagement`.
+
+`learn --soak-days 7` (default): carousels younger than 7 days are excluded — engagement metrics need time to mature, daily learning would chase noise. Older than 90 days = stale and ignored too.
+
+If fewer than ~5 winners + 5 losers are eligible, `learn` skips the synthesis and writes a "not enough data" note to `learnings/runs/learn-YYYY-MM-DD.md`. Just keep publishing.
+
+### Audit trail
+
+Every `learn` run writes a full audit to `learnings/runs/learn-YYYY-MM-DD.md`: which carousels were called winners, with their composite scores, the previous priors, and the new priors side-by-side. Old priors are backed up as `HOT_HOOKS.YYYYMMDD-HHMMSS.md.bak` and `HOT_IMAGERY.YYYYMMDD-HHMMSS.md.bak`. You can roll back if Gemini synthesizes garbage.
+
+### Reflect: edit-as-rejection signal
+
+`reflect` exploits a smarter signal than autoshorts'. It uses `candidate_id` (sha1 of the plan content) to detect three distinct outcomes:
+
+- **Approved-unchanged**: agent's initial plan was published verbatim → strong positive signal.
+- **Edited-then-published**: initial plan logged, but post-history has a different `candidate_id` for the same product → user revised it before publishing (mild negative on the original).
+- **Never-published**: candidate logged, no matching post → full rejection.
+
+Output goes to `learnings/runs/reflect-...md` and is **not** auto-promoted to the HOT files — reflect could lock in your past biases rather than what actually performs. Read, curate manually.
+
+### Don'ts
+
+- Don't edit `HOT_HOOKS.md` / `HOT_IMAGERY.md` by hand AND keep running `learn` — `learn` will overwrite. Manual rules go in `learnings/insights/`.
+- Don't delete `post-history.jsonl`, `candidate-history.jsonl`, or `metrics.jsonl` — they're append-only memory.
+- Don't run `learn` more than once a week — Gemini will just churn the same patterns.
+- Don't call `log-candidate` multiple times per planning session — only the FIRST plan, before user edits.
+
+---
+
 ## 🧩 Architecture: agent-driven, script-as-glue
 
 The Python script (`autoecom.py`) deliberately does **not** scrape the brand kit, plan slides, or write copy. Those tasks are creative + visual — the agent does them with `WebFetch`, `Read` (multimodal), and `Write`. The script only handles mechanical work the agent can't do directly:
@@ -115,14 +207,17 @@ The Python script (`autoecom.py`) deliberately does **not** scrape the brand kit
 | `download <url> <out>` | Fetch a URL to a local file (logo, product image). |
 | `palette <image> [--n 5]` | Extract dominant hex colors from an image. |
 | `product <url>` | Parse a product page's JSON-LD into a JSON dict. |
-| `generate <plan.json>` | Call nano-banana once per slide (image input + image output). |
+| `generate <plan.json>` | Call nano-banana per slide (auto-prepends `HOT_IMAGERY.md` prior). |
 | `compose <plan.json>` | Pillow composition: resize, gradient, text overlay, logo. |
-| `publish <plan.json>` | Upload-Post photo carousel multipart POST. |
+| `publish <plan.json>` | Upload-Post photo carousel multipart POST. Logs to `post-history.jsonl`. |
 | `mark-processed <url>` | Persist round-robin state. |
-| `list-processed` | Dump `state/processed.json`. |
-| `new-cycle` | Manually start a new round-robin cycle. |
+| `list-processed` / `new-cycle` | Round-robin admin. |
+| `priors` | Dump current `HOT_HOOKS.md` + `HOT_IMAGERY.md` for the agent to read. |
+| `log-candidate <plan.json>` | Append the agent's INITIAL plan proposal to `candidate-history.jsonl`. |
+| `learn` | Weekly. Pull engagement, refresh both priors. |
+| `reflect` | On-demand qualitative pass: candidates vs published. |
 
-The agent decides **what** goes into `plan.json`; the script makes it real.
+The agent decides **what** goes into `plan.json`; the script makes it real — and learns from what shipped.
 
 ---
 
