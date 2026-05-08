@@ -753,7 +753,7 @@ CONSTRAINTS
 - Cite sample sizes: "(seen in 4/5 winners, 0/5 losers)".
 - Merge with existing HOT_HOOKS.md: keep what's still corroborated, drop what's contradicted, add new patterns.
 - Write in the dominant language of the hooks themselves.
-- If evidence is weak (<5 winners or <5 losers), output the existing HOT_HOOKS.md plus a single appended bullet noting "evidence still thin, N carousels analyzed".
+- If evidence is weak (<3 winners or <3 losers), output the existing HOT_HOOKS.md plus a single appended bullet noting "evidence still thin, N carousels analyzed".
 
 OUTPUT
 Return ONLY the updated HOT_HOOKS.md content as plain markdown. No preamble, no JSON wrapper."""
@@ -777,7 +777,8 @@ CONSTRAINTS
 - Cite sample sizes: "(seen in 4/5 winners, 0/5 losers)".
 - Merge with existing HOT_IMAGERY.md: keep what's still corroborated, drop what's contradicted.
 - This file is auto-prepended to every nano-banana call, so write it AS DIRECT GUIDANCE TO AN IMAGE MODEL — use directive language ("prefer", "avoid").
-- If evidence is weak (<5 winners or <5 losers), output the existing HOT_IMAGERY.md plus a single bullet noting "evidence still thin, N carousels analyzed".
+- If evidence is weak (<3 winners or <3 losers), output the existing HOT_IMAGERY.md plus a single bullet noting "evidence still thin, N carousels analyzed".
+- If the winners and losers have no image_prompts at all (empty lists everywhere), output the existing HOT_IMAGERY.md unchanged plus a single bullet noting "no image_prompt data available — keeping existing priors".
 
 OUTPUT
 Return ONLY the updated HOT_IMAGERY.md content as plain markdown. No preamble, no JSON wrapper."""
@@ -880,8 +881,9 @@ def cmd_learn(args: argparse.Namespace) -> None:
         m = _post_metrics(body.get("platforms") or {})
         enriched.append({**h, "metrics": m})
 
-    if len(enriched) < 5:
-        msg = f"only {len(enriched)} carousels have analytics — need >=5 winners + >=5 losers, retry later"
+    if len(enriched) < args.min_cohort:
+        msg = (f"only {len(enriched)} carousels have analytics — need >={args.min_cohort} "
+               f"to refresh priors, retry later")
         log(f"[learn] {msg}")
         run_path = RUNS_FOLDER / f"learn-{now.strftime('%Y-%m-%d')}.md"
         run_path.parent.mkdir(parents=True, exist_ok=True)
@@ -897,8 +899,11 @@ def cmd_learn(args: argparse.Namespace) -> None:
 
     enriched.sort(key=lambda c: c["composite"], reverse=True)
     n = len(enriched)
-    top_n = max(5, int(n * args.top_pct))
-    bot_n = max(5, int(n * args.bottom_pct))
+    top_n = max(args.min_per_bucket, int(n * args.top_pct))
+    bot_n = max(args.min_per_bucket, int(n * args.bottom_pct))
+    # Guard against overlap when n is small.
+    if top_n + bot_n > n:
+        top_n = bot_n = max(1, n // 2)
     winners = enriched[:top_n]
     losers = enriched[-bot_n:]
 
@@ -1170,6 +1175,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--bottom-pct", type=float, default=0.20)
     s.add_argument("--weight-views", type=float, default=0.6)
     s.add_argument("--weight-engagement", type=float, default=0.4)
+    s.add_argument("--min-cohort", type=int, default=7,
+                   help="minimum total carousels with analytics to run synthesis")
+    s.add_argument("--min-per-bucket", type=int, default=3,
+                   help="minimum winners and minimum losers per bucket")
     s.set_defaults(func=cmd_learn)
 
     s = sub.add_parser("reflect",
