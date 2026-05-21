@@ -108,7 +108,7 @@ The agent will handle the entire bootstrap **including the two cron jobs**. With
 6. **Compose** — Pillow lays text + logo + gradient onto each slide.
 7. **Visual QA** — agent looks at every slide and flags drift before showing the user.
 8. **Approval** — user approves the carousel from Telegram / WhatsApp / CLI.
-9. **Publish** — multipart POST to Upload-Post → IG carousel + TikTok draft.
+9. **Publish** — multipart POST to Upload-Post → IG carousel published + **TikTok always as draft** so you add a trending sound in-app (see [TikTok draft mode](#-tiktok-publishes-as-draft-on-purpose)).
 10. **Mark processed** — round-robin state advances; tomorrow picks the next product.
 
 ---
@@ -284,11 +284,33 @@ The agent walks through Steps 0–9 from `SKILL.md`: preflight → brand kit →
 
 ---
 
+## 🎵 TikTok publishes as draft on purpose
+
+Every TikTok upload goes to the **draft inbox** (`post_mode=MEDIA_UPLOAD`, [Upload-Post `/api/upload_photos`](https://docs.upload-post.com/api/upload-photo)). This is intentional and the agent will **always** recommend it.
+
+**Why drafts beat direct posts on TikTok:**
+
+- TikTok's algorithm heavily promotes photo carousels that ride a **trending / viral sound**.
+- **Trending sounds can only be attached from inside the TikTok app** — there is no API surface for them.
+- A direct-publish carousel goes live silent (or with a default placeholder) and almost never breaks out of the cold-start traffic bucket.
+- A draft carousel lets you open TikTok → drafts → add a viral sound → publish, and lands with the same algorithmic boost the native app users get.
+
+**The flow the agent walks you through:**
+
+1. Approve the carousel from your messenger.
+2. `publish` sends the slides to TikTok as a draft (and to Instagram fully published, since IG has no equivalent sound mechanic).
+3. The agent reminds you in chat: *"open TikTok → drafts → add a viral sound → publish."*
+4. You pick a trending sound in-app (the "🔥" or top-charts section), publish, done.
+
+If you genuinely want to bypass this (e.g. for an automation test), pass `--tiktok-mode direct` explicitly. The skill will NOT do this on its own.
+
+---
+
 ## ⚠️ Limits & caveats
 
 - **Product fidelity** — nano-banana can drift the product's look on stylized scenes. The agent visually QAs every slide and flags drift before showing it to you.
 - **Carousel size** — Instagram caps at 10 slides. The skill caps at 10 automatically.
-- **TikTok** — always uploaded as draft (`post_mode=MEDIA_UPLOAD`). You finish the post in the TikTok app.
+- **TikTok always draft** — see [TikTok publishes as draft on purpose](#-tiktok-publishes-as-draft-on-purpose). You finish the post in the TikTok app by adding a trending sound. Override with `--tiktok-mode direct` only if you really know what you're doing.
 - **Rate limits** — nano-banana has per-minute quotas. Generating a full 8-slide carousel in one run is fine; running 10+ products back-to-back may hit limits.
 - **API keys in chat** — if you paste a key into the agent conversation, the key ends up in the conversation logs. Rotate it after testing.
 

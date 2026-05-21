@@ -1,12 +1,26 @@
 ---
 name: autoecom
-description: "Daily ecommerce carousel pipeline. The agent reads the store URL, identifies the logo / colors / font / voice itself (using WebFetch + multimodal vision), picks the next bestseller in round-robin order, plans a 3–8 slide carousel, generates stylized slide images via nano-banana (Gemini 2.5 Flash Image) using the real product photo as reference, composes branded final slides with Pillow, presents the carousel for human approval, and publishes it to Instagram + TikTok via Upload-Post. Use when the user wants daily product carousels, mentions autoecom, ecommerce shorts, product slides, or asks for the daily carousel batch."
+description: "Turn any ecommerce store into daily Instagram & TikTok product carousels. AI pipeline: agent auto-extracts brand kit (logo, colors, font, voice) from the store URL via WebFetch + vision, picks the next bestseller round-robin, generates 3–8 stylized slide images with nano-banana (Gemini 2.5 Flash Image) using the real product photo as reference, composes branded slides with Pillow, you approve, Upload-Post publishes. Use when the user wants daily product carousels, mentions autoecom, ecommerce content, product slides, shop content automation, or asks for the daily carousel batch."
 license: MIT
 compatibility: "Requires Python 3.11+, google-genai SDK, Pillow, beautifulsoup4, lxml, requests, and internet access for the store URL, Gemini, and Upload-Post APIs. Designed to run inside an agent harness (openclaw / Claude Code) — works headless on a VPS as long as the agent has WebFetch."
 metadata:
   author: mutonby
-  version: "1.0.0"
+  version: "1.0.1"
   homepage: "https://github.com/mutonby/skill-autoecom"
+  primaryEnv: UPLOAD_POST_API_KEY
+  requires:
+    bins: [python3]
+    env: [STORE_URL, GEMINI_API_KEY, UPLOAD_POST_API_KEY, UPLOAD_POST_PROFILE]
+  envVars:
+    - { name: STORE_URL,            required: true,  description: "Storefront URL the agent crawls for brand kit + bestsellers (e.g. https://www.your-shop.com)" }
+    - { name: GEMINI_API_KEY,       required: true,  description: "Google Gemini API key — used for both text (2.5 Flash) and image generation (nano-banana, 2.5 Flash Image)" }
+    - { name: UPLOAD_POST_API_KEY,  required: true,  description: "Upload-Post API key (https://app.upload-post.com → Settings → API Keys)" }
+    - { name: UPLOAD_POST_PROFILE,  required: true,  description: "Upload-Post profile name with the connected Instagram + TikTok accounts" }
+    - { name: TIMEZONE,             required: false, description: "IANA timezone for daily scheduling (default: Europe/Madrid)" }
+    - { name: OUTPUT_FOLDER,        required: false, description: "Absolute path where carousel output is written (default: <skill>/output)" }
+    - { name: GEMINI_IMAGE_MODEL,   required: false, description: "Override the nano-banana image model (default: gemini-2.5-flash-image)" }
+    - { name: GEMINI_TEXT_MODEL,    required: false, description: "Override the Gemini text model (default: gemini-2.5-flash)" }
+    - { name: BRAND_FONT_PATH,      required: false, description: "Absolute path to a .ttf for slide text. Falls back to a system bold font if unset." }
 ---
 
 # AutoEcom — Daily Product Carousel Pipeline
@@ -116,7 +130,6 @@ Check that the environment is ready and ask the user for whatever is missing:
    - `STORE_URL` → if missing, ask: *"¿Cuál es la URL de tu tienda? (la home, no una ficha)."*
    - `GEMINI_API_KEY` → if missing, ask: *"Falta la API key de Gemini. Pégamela (la generas en https://aistudio.google.com/apikey)."*
    - `UPLOAD_POST_API_KEY` and `UPLOAD_POST_PROFILE` → if missing, ask: *"Necesito la API key de Upload-Post y el nombre del profile (Manage Users en https://app.upload-post.com)."*
-3. **Upload-Post platform health** — `curl -H "Authorization: Apikey $UPLOAD_POST_API_KEY" https://api.upload-post.com/api/uploadposts/users` and read `reauth_required` for each platform on the configured profile. If any platform requires reauth, surface it now.
 
 If the user provides an API key in the conversation, write it to `.env` immediately, never echo it back, and **warn that the key is now in conversation logs and they should rotate it after testing.**
 
@@ -151,7 +164,7 @@ Goal: produce `state/brand_kit.json` with fields:
 2. **Download the logo.** `python autoecom.py download <LOGO_URL> state/logo.png`. (For SVG logos, save with `.svg` extension instead — Pillow can't read SVG, but you'll fall back to the colors hex you read from the page.)
 3. **Extract the color palette.** Two ways, run both and reconcile:
    - Mechanical: `python autoecom.py palette state/logo.png` → JSON list of hex colors.
-   - Visual: `Read state/logo.png` yourself. Look at the image. Pick the **primary** color (the dominant brand color, what the user would call "Bricoclick orange") and the **accent** (the contrast color, what's used for text on top of the primary). The mechanical palette tells you what colors EXIST in the logo; you decide which is primary vs accent based on what looks like the brand identity.
+   - Visual: `Read state/logo.png` yourself. Look at the image. Pick the **primary** color (the dominant brand color, what the user would call "the brand's signature color") and the **accent** (the contrast color, what's used for text on top of the primary). The mechanical palette tells you what colors EXIST in the logo; you decide which is primary vs accent based on what looks like the brand identity.
 4. **Identify the font.** `WebFetch <STORE_URL>` again, ask: *"What font-family does this site use for headings? Look at Google Fonts `<link>` tags first, then inline CSS. Return just the family name."*
 5. **Infer brand voice.** `WebFetch <STORE_URL>` once more, ask: *"From the homepage copy, summarize the brand voice as JSON with keys `language` (ISO 639-1), `tone` (one line), `audience` (one line), `positioning` (one sentence), `do` (3 bullets), `dont` (3 bullets). Be concrete."* Take the JSON.
 6. **Write `state/brand_kit.json`** with the `Write` tool, combining all of the above plus `store`, `fetched_at` (today), and `logo_path` (absolute path of the file you just downloaded).
@@ -305,7 +318,15 @@ python autoecom.py publish "output/YYYY-MM-DD/<slug>/plan.json" \
 
 **Always run with `--dry-run` first** and show the user the exact request payload. Only execute the real publish (without `--dry-run`) after explicit "go".
 
-The publish call uploads the composed `slide_*.png` files (sorted, max 10) as a **photo carousel** via `POST /api/upload_photos`. The caption from `plan.json` plus hashtags is sent as the `caption` field. TikTok mode is `draft` by default per project policy (`MEDIA_UPLOAD` → goes to TikTok inbox, never auto-publishes).
+The publish call uploads the composed `slide_*.png` files (sorted, max 10) as a **photo carousel** via `POST /api/upload_photos` (see https://docs.upload-post.com/api/upload-photo). The caption from `plan.json` plus hashtags is sent as the `caption` field.
+
+**TikTok: always recommend `draft` mode (default — never override).** This sends the carousel to the TikTok app inbox (`post_mode=MEDIA_UPLOAD`) instead of auto-publishing. Reason: TikTok's algorithm massively favors photo posts that use a **trending / viral sound**, and that sound can only be added from inside the TikTok app — not via the API. If you push `--tiktok-mode direct`, the carousel goes live without any audio (or with a default placeholder), and the post under-performs.
+
+**After the publish call succeeds, you (the agent) MUST tell the user explicitly:**
+
+> 🎵 *El carrusel está en el inbox de TikTok como borrador. Abre la app TikTok → bandeja de borradores → añade un sonido viral antes de publicarlo (top trending hoy). Sin canción viral el post se queda sin alcance.*
+
+(Adapt the wording to the brand voice's language.) This reminder is non-negotiable — it's the single biggest delta between a TikTok carousel that flops and one that doesn't. Skipping the reminder defeats the whole reason draft mode is the default.
 
 ### Step 8 — Mark product as processed
 
@@ -374,7 +395,9 @@ Output goes to `learnings/runs/reflect-YYYY-MM-DD-HHMM.md` and is **NOT auto-pro
 
 - **Aspect ratio**: 1080×1350 (4:5). IG carousel native. TikTok photo posts accept 4:5 fine.
 - **Slide count**: 2–10 (Instagram caps carousels at 10). The planner targets 3–8.
-- **TikTok always draft** (`post_mode=MEDIA_UPLOAD`). The user always reviews on the phone before publishing on TikTok.
+- **TikTok always draft** (`post_mode=MEDIA_UPLOAD`, Upload-Post `/api/upload_photos`). Two reasons, both mandatory:
+  1. The user reviews the carousel on the phone before it goes live.
+  2. **The user adds a trending / viral sound** in the TikTok app before publishing. Photo carousels without a viral sound under-perform dramatically on TikTok's algorithm — and sounds can only be added in-app, not via the API. The agent MUST remind the user of this after every TikTok publish (see Step 7).
 - **No Reels / Shorts video output** — this skill is image-only. For vertical video clips, use the `autoshorts` skill instead.
 
 ## Files & layout
